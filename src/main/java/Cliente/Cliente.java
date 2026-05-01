@@ -10,151 +10,159 @@ import java.util.List;
 import java.io.*;
 
 public class Cliente {
-    private static final String serverHost = "127.0.0.1";
-    private static final int serverPort = 7777;
-    private static final String baseDirectory = "./Cliente/Archivos";
+    // 1. Constantes corregidas a UPPER_SNAKE_CASE
+    private static final String SERVER_HOST = "127.0.0.1";
+    private static final int SERVER_PORT = 7777;
+    private static final String BASE_DIRECTORY = "./Cliente/Archivos";
 
-    // Instanciamos el gestor para manejar el entorno local del cliente
-    private static GestorArchivos gestor = new GestorArchivos(baseDirectory);
+    private static final GestorArchivos gestor = new GestorArchivos(BASE_DIRECTORY);
+
+    private static volatile boolean running = true; // FIX: Condición de salida
 
     public static void main(String[] args) {
-        try {
-            SocketChannel socketChannel = SocketChannel.open();
-            socketChannel.configureBlocking(false);
+        // 2. Simplificación del bloque principal extrayendo a submétodos
+        try (SocketChannel socketChannel = SocketChannel.open();
+             Selector selector = Selector.open()) {
 
-            Selector selector = Selector.open();
-            socketChannel.connect(new InetSocketAddress(serverHost, serverPort));
+            socketChannel.configureBlocking(false);
+            socketChannel.connect(new InetSocketAddress(SERVER_HOST, SERVER_PORT));
             socketChannel.register(selector, SelectionKey.OP_CONNECT);
 
             BufferedReader consoleReader = new BufferedReader(new InputStreamReader(System.in));
 
-            while (true) {
+            while (running) {
                 selector.select();
                 Iterator<SelectionKey> iterator = selector.selectedKeys().iterator();
 
                 while (iterator.hasNext()) {
-                    SelectionKey selectionKey = (SelectionKey) iterator.next();
+                    SelectionKey selectionKey = iterator.next();
                     iterator.remove();
 
                     if (selectionKey.isConnectable()) {
-                        SocketChannel channel = (SocketChannel) selectionKey.channel();
-                        if (channel.isConnectionPending()) {
-                            try {
-                                channel.finishConnect();
-                                System.out.println("Conectado exitosamente al servidor.");
-                            } catch (Exception e) {
-                                System.out.println("Error al conectar: " + e.getMessage());
-                                return;
-                            }
-                        }
-                        channel.register(selector, SelectionKey.OP_READ | SelectionKey.OP_WRITE);
-                        continue;
-                    }
-
-                    // --- ENTRADA DE COMANDOS ---
-                    if (selectionKey.isWritable()) {
-                        System.out.println("\nEscriba un comando (o 'exit' para salir)...");
-                        System.out.print(gestor.getDirectorioActual() + " > ");
-
-                        String line = consoleReader.readLine();
-                        if (line == null || line.trim().isEmpty()) continue;
-
-                        String[] partes = line.split(" ", 4);
-                        String argumento = partes[0];
-                        String argumento1 = (partes.length > 1) ? partes[1] : "";
-                        String argumento2 = (partes.length > 2) ? partes[2] : "";
-
-                        // --- COMANDOS LOCALES (Usando GestorArchivos) ---
-                        if (argumento.equals("ls")) {
-                            System.out.println("--- Archivos Locales ---");
-                            List<String> archivos = gestor.listarArchivos();
-                            if (archivos.isEmpty()) System.out.println("(Directorio vacío)");
-                            else archivos.forEach(System.out::println);
-                            continue;
-
-                        } else if (argumento.equals("cd")) {
-                            if (!gestor.moverDirectorio(argumento1)) {
-                                System.out.println("Directorio no encontrado o ya estás en la raíz.");
-                            }
-                            continue;
-
-                        } else if (argumento.equals("touch")) {
-                            if (gestor.crearArchivo(argumento1)) System.out.println("Archivo creado.");
-                            else System.out.println("El archivo ya existe o hubo un error.");
-                            continue;
-
-                        } else if (argumento.equals("mkdir")) {
-                            if (gestor.crearCarpeta(argumento1)) System.out.println("Carpeta creada.");
-                            else System.out.println("La carpeta ya existe o hubo un error.");
-                            continue;
-
-                        } else if (argumento.equals("mv")) {
-                            if (gestor.renombrar(argumento1, argumento2)) System.out.println("Renombrado exitoso.");
-                            else System.out.println("Error al renombrar.");
-                            continue;
-
-                        } else if (argumento.equals("rm")) {
-                            if (gestor.eliminarArchivo(argumento1)) System.out.println("Archivo eliminado.");
-                            else System.out.println("No se pudo eliminar el archivo.");
-                            continue;
-
-                        } else if (argumento.equals("rmdir")) {
-                            if (gestor.eliminarCarpeta(argumento1)) System.out.println("Carpeta eliminada.");
-                            else System.out.println("No se pudo eliminar la carpeta.");
-                            continue;
-
-                        } else if (argumento.equals("cls")) {
-                            clearTerminal();
-                            continue;
-
-                            // --- COMANDOS DE RED (Cliente -> Servidor) ---
-                        } else if (argumento.equals("cp")) {
-                            enviarArchivoAlServidor(argumento1, socketChannel);
-                            continue;
-                        } else if (argumento.equals("cpdir")) {
-                            enviarCarpetaAlServidor(argumento1, socketChannel);
-                            continue;
-
-                        } else if (argumento.equalsIgnoreCase("exit")) {
-                            System.out.println("Cerrando cliente...");
-                            ByteBuffer bb = ByteBuffer.wrap(line.getBytes());
-                            socketChannel.write(bb);
-                            socketChannel.close();
-                            System.exit(0);
-
-                            // --- COMANDOS AL SERVIDOR (Servidor -> Cliente u otras peticiones) ---
-                        } else if (argumento.equals("SRV")) {
-                            SocketChannel channel = (SocketChannel) selectionKey.channel();
-
-                            // Reconstruimos el comando quitando "SRV "
-                            String comandoServidor = line.substring(4);
-                            channel.write(ByteBuffer.wrap(comandoServidor.getBytes()));
-
-                            selectionKey.interestOps(SelectionKey.OP_READ);
-                            selector.select();
-
-                            if (selectionKey.isReadable()) {
-                                if (argumento1.equals("cp")) {
-                                    recibirArchivoDelServidor(argumento2, channel);
-                                } else if (argumento1.equals("cpdir")) {
-                                    recibirCarpetaDelServidor(argumento2, channel);
-                                } else {
-                                    ByteBuffer readBuffer = ByteBuffer.allocate(2000);
-                                    int bytesRead = channel.read(readBuffer);
-                                    if (bytesRead > 0) {
-                                        readBuffer.flip();
-                                        System.out.println(new String(readBuffer.array(), 0, bytesRead));
-                                    }
-                                }
-                                selectionKey.interestOps(SelectionKey.OP_WRITE);
-                            }
-                            continue;
-                        }
+                        finalizarConexion(selectionKey, selector);
+                    } else if (selectionKey.isWritable()) {
+                        procesarEntradaUsuario(consoleReader, socketChannel, selectionKey, selector);
                     }
                 }
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            System.err.println("Error en el cliente: " + e.getMessage());
+        }
+    }
+
+    private static void finalizarConexion(SelectionKey selectionKey, Selector selector) throws IOException {
+        SocketChannel channel = (SocketChannel) selectionKey.channel();
+        if (channel.isConnectionPending()) {
+            try {
+                channel.finishConnect();
+                System.out.println("Conectado exitosamente al servidor.");
+            } catch (Exception e) {
+                System.out.println("Error al conectar: " + e.getMessage());
+                System.exit(1);
+            }
+        }
+        channel.register(selector, SelectionKey.OP_READ | SelectionKey.OP_WRITE);
+    }
+
+    private static void procesarEntradaUsuario(BufferedReader consoleReader, SocketChannel socketChannel, SelectionKey selectionKey, Selector selector) throws IOException {
+        System.out.println("\nEscriba un comando (o 'exit' para salir)...");
+        System.out.print(gestor.getDirectorioActual() + " > ");
+
+        String line = consoleReader.readLine();
+        if (line == null || line.trim().isEmpty()) return;
+
+        String[] partes = line.split(" ", 4);
+        String argumento = partes[0];
+        String argumento1 = (partes.length > 1) ? partes[1] : "";
+        String argumento2 = (partes.length > 2) ? partes[2] : "";
+
+        if (argumento.equals("SRV")) {
+            enviarComandoSrv(line, argumento1, argumento2, selectionKey, selector);
+            return;
+        }
+
+        ejecutarComandoLocalORed(line, argumento, argumento1, argumento2, socketChannel);
+    }
+
+    // 3. Switch en lugar de muchísimos 'if-else' encadenados
+    private static void ejecutarComandoLocalORed(String line, String argumento, String argumento1, String argumento2, SocketChannel socketChannel) throws IOException {
+        switch (argumento) {
+            case "ls":
+                manejarLsLocal();
+                break;
+            case "cd":
+                if (!gestor.moverDirectorio(argumento1)) System.out.println("Directorio no encontrado o ya estás en la raíz.");
+                break;
+            case "touch":
+                System.out.println(gestor.crearArchivo(argumento1) ? "Archivo creado." : "El archivo ya existe o hubo un error.");
+                break;
+            case "mkdir":
+                System.out.println(gestor.crearCarpeta(argumento1) ? "Carpeta creada." : "La carpeta ya existe o hubo un error.");
+                break;
+            case "mv":
+                System.out.println(gestor.renombrar(argumento1, argumento2) ? "Renombrado exitoso." : "Error al renombrar.");
+                break;
+            case "rm":
+                System.out.println(gestor.eliminarArchivo(argumento1) ? "Archivo eliminado." : "No se pudo eliminar el archivo.");
+                break;
+            case "rmdir":
+                System.out.println(gestor.eliminarCarpeta(argumento1) ? "Carpeta eliminada." : "No se pudo eliminar la carpeta.");
+                break;
+            case "cls":
+                clearTerminal();
+                break;
+            case "cp":
+                enviarArchivoAlServidor(argumento1, socketChannel);
+                break;
+            case "cpdir":
+                enviarCarpetaAlServidor(argumento1, socketChannel);
+                break;
+            case "exit":
+                salirDelCliente(line, socketChannel);
+                break;
+            default:
+                System.out.println("Comando no reconocido localmente.");
+                break;
+        }
+    }
+
+    private static void manejarLsLocal() {
+        System.out.println("--- Archivos Locales ---");
+        List<String> archivos = gestor.listarArchivos();
+        if (archivos.isEmpty()) System.out.println("(Directorio vacío)");
+        else archivos.forEach(System.out::println);
+    }
+
+    private static void salirDelCliente(String line, SocketChannel socketChannel) throws IOException {
+        System.out.println("Cerrando cliente...");
+        ByteBuffer bb = ByteBuffer.wrap(line.getBytes());
+        socketChannel.write(bb);
+        socketChannel.close();
+        System.exit(0);
+    }
+
+    private static void enviarComandoSrv(String line, String argumento1, String argumento2, SelectionKey selectionKey, Selector selector) throws IOException {
+        SocketChannel channel = (SocketChannel) selectionKey.channel();
+        String comandoServidor = line.substring(4);
+        channel.write(ByteBuffer.wrap(comandoServidor.getBytes()));
+
+        selectionKey.interestOps(SelectionKey.OP_READ);
+        selector.select();
+
+        if (selectionKey.isReadable()) {
+            if (argumento1.equals("cp")) {
+                recibirArchivoDelServidor(argumento2, channel);
+            } else if (argumento1.equals("cpdir")) {
+                recibirCarpetaDelServidor(argumento2, channel);
+            } else {
+                ByteBuffer readBuffer = ByteBuffer.allocate(2000);
+                int bytesRead = channel.read(readBuffer);
+                if (bytesRead > 0) {
+                    readBuffer.flip();
+                    System.out.println(new String(readBuffer.array(), 0, bytesRead));
+                }
+            }
+            selectionKey.interestOps(SelectionKey.OP_WRITE);
         }
     }
 
@@ -271,8 +279,10 @@ public class Cliente {
     private static void clearTerminal() {
         try {
             new ProcessBuilder("cmd", "/c", "cls").inheritIO().start().waitFor();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt(); // FIX: Restaurar estado de interrupción
         } catch (Exception e) {
-            // Ignorar en caso de no estar en Windows o fallar
+            // Ignorar en caso de no estar en Windows
         }
     }
 }

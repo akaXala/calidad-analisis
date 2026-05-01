@@ -15,17 +15,12 @@ public class GestorArchivos {
     public GestorArchivos(String baseDirectory) {
         this.baseDirectory = baseDirectory;
         this.directories = new Stack<>();
-
-        // Aseguramos que el directorio base exista al instanciar la clase
         File base = new File(this.baseDirectory);
         if (!base.exists()) {
             base.mkdirs();
         }
     }
 
-    /**
-     * Construye y retorna la ruta actual basándose en la pila de directorios.
-     */
     public String getDirectorioActual() {
         StringBuilder actual = new StringBuilder(baseDirectory);
         for (String dir : directories) {
@@ -34,15 +29,9 @@ public class GestorArchivos {
         return actual.toString();
     }
 
-    /**
-     * Retorna una lista con los nombres de los archivos en el directorio actual.
-     * Ideal para hacer un assert en JUnit (ej. assertTrue(lista.contains("miArchivo.txt")))
-     */
     public List<String> listarArchivos() {
         List<String> lista = new ArrayList<>();
-        File path = new File(getDirectorioActual());
-        File[] files = path.listFiles();
-
+        File[] files = new File(getDirectorioActual()).listFiles();
         if (files != null) {
             for (File file : files) {
                 lista.add(file.getName());
@@ -51,78 +40,67 @@ public class GestorArchivos {
         return lista;
     }
 
-    /**
-     * Navega entre directorios (".." para retroceder, o el nombre de la carpeta para avanzar).
-     * Retorna true si tuvo éxito, false si el directorio no existe o ya está en la raíz.
-     */
     public boolean moverDirectorio(String argument) {
         if (argument.equals("..")) {
-            if (!directories.empty()) {
-                directories.pop();
-                return true;
-            }
-            return false; // Ya estamos en la raíz
-        } else {
-            String newDirectory = getDirectorioActual() + "/" + argument;
-            File file = new File(newDirectory);
-
-            if (file.exists() && file.isDirectory()) {
-                directories.push(argument);
-                return true;
-            }
-            return false;
+            return retrocederDirectorio();
         }
+        return avanzarDirectorio(argument);
+    }
+
+    private boolean retrocederDirectorio() {
+        if (!directories.empty()) {
+            directories.pop();
+            return true;
+        }
+        return false;
+    }
+
+    private boolean avanzarDirectorio(String argument) {
+        File file = new File(getDirectorioActual() + "/" + argument);
+        if (file.exists() && file.isDirectory()) {
+            directories.push(argument);
+            return true;
+        }
+        return false;
     }
 
     public boolean crearArchivo(String fileName) throws IOException {
-        String path = getDirectorioActual() + "/" + fileName;
-        File file = new File(path);
-        return file.createNewFile(); // Retorna true si lo creó, false si ya existía
+        return new File(getDirectorioActual() + "/" + fileName).createNewFile();
     }
 
     public boolean crearCarpeta(String folderName) {
-        String path = getDirectorioActual() + "/" + folderName;
-        File folder = new File(path);
-        return folder.mkdir();
+        return new File(getDirectorioActual() + "/" + folderName).mkdir();
     }
 
     public boolean renombrar(String name, String newName) {
-        String actualDirectory = getDirectorioActual();
-        File original = new File(actualDirectory + "/" + name);
-        File nuevo = new File(actualDirectory + "/" + newName);
-        return original.renameTo(nuevo);
+        String dir = getDirectorioActual();
+        return new File(dir + "/" + name).renameTo(new File(dir + "/" + newName));
     }
 
     public boolean eliminarArchivo(String fileName) {
-        String path = getDirectorioActual() + "/" + fileName;
-        File file = new File(path);
+        File file = new File(getDirectorioActual() + "/" + fileName);
         return file.exists() && file.isFile() && file.delete();
     }
 
     public boolean eliminarCarpeta(String folderName) {
-        String path = getDirectorioActual() + "/" + folderName;
-        File folder = new File(path);
+        File folder = new File(getDirectorioActual() + "/" + folderName);
         return folder.exists() && folder.isDirectory() && eliminarRecursivo(folder);
     }
 
     private boolean eliminarRecursivo(File folder) {
-        if (!folder.exists()) return false;
         File[] files = folder.listFiles();
         if (files != null) {
             for (File file : files) {
                 if (file.isDirectory()) {
-                    eliminarRecursivo(file);
+                    if (!eliminarRecursivo(file)) return false;
                 } else {
-                    file.delete();
+                    if (!file.delete()) return false; // Fix: usar el resultado de delete()
                 }
             }
         }
         return folder.delete();
     }
 
-    /**
-     * Retorna el objeto File para que las clases de Sockets puedan leer su tamaño y enviarlo.
-     */
     public File obtenerArchivo(String fileName) {
         return new File(getDirectorioActual() + "/" + fileName);
     }
@@ -131,38 +109,38 @@ public class GestorArchivos {
 
     public boolean comprimirCarpeta(String folderName, String destZipPath) {
         File folder = new File(getDirectorioActual() + "/" + folderName);
-        if (!folder.exists() || !folder.isDirectory()) {
-            return false;
-        }
+        if (!folder.exists() || !folder.isDirectory()) return false;
 
         try (ZipOutputStream zipOut = new ZipOutputStream(new FileOutputStream(destZipPath))) {
-            comprimirRecursivo(folder, folder.getName(), zipOut);
+            comprimirContenido(folder, folder.getName(), zipOut);
             return true;
         } catch (Exception e) {
-            e.printStackTrace();
             return false;
         }
     }
 
-    private void comprimirRecursivo(File file, String relativeName, ZipOutputStream zipOut) throws IOException {
+    private void comprimirContenido(File file, String relativeName, ZipOutputStream zipOut) throws IOException {
         if (file.isDirectory()) {
             File[] files = file.listFiles();
             if (files != null) {
                 for (File subFile : files) {
-                    comprimirRecursivo(subFile, relativeName + "/" + subFile.getName(), zipOut);
+                    comprimirContenido(subFile, relativeName + "/" + subFile.getName(), zipOut);
                 }
             }
         } else {
-            try (FileInputStream fis = new FileInputStream(file)) {
-                ZipEntry zipEntry = new ZipEntry(relativeName);
-                zipOut.putNextEntry(zipEntry);
-                byte[] buffer = new byte[1024];
-                int length;
-                while ((length = fis.read(buffer)) >= 0) {
-                    zipOut.write(buffer, 0, length);
-                }
-                zipOut.closeEntry();
+            escribirArchivoEnZip(file, relativeName, zipOut);
+        }
+    }
+
+    private void escribirArchivoEnZip(File file, String relativeName, ZipOutputStream zipOut) throws IOException {
+        try (FileInputStream fis = new FileInputStream(file)) {
+            zipOut.putNextEntry(new ZipEntry(relativeName));
+            byte[] buffer = new byte[1024];
+            int length;
+            while ((length = fis.read(buffer)) >= 0) {
+                zipOut.write(buffer, 0, length);
             }
+            zipOut.closeEntry();
         }
     }
 
@@ -173,28 +151,43 @@ public class GestorArchivos {
         try (ZipInputStream zis = new ZipInputStream(new FileInputStream(zipFilePath))) {
             ZipEntry entry;
             while ((entry = zis.getNextEntry()) != null) {
-                File file = new File(destDir, entry.getName());
-
-                if (entry.isDirectory()) {
-                    if (!file.exists() && !file.mkdirs()) return false;
-                } else {
-                    File parentDir = file.getParentFile();
-                    if (!parentDir.exists() && !parentDir.mkdirs()) return false;
-
-                    try (BufferedOutputStream bos = new BufferedOutputStream(new FileOutputStream(file))) {
-                        byte[] buffer = new byte[1024];
-                        int count;
-                        while ((count = zis.read(buffer)) > 0) {
-                            bos.write(buffer, 0, count);
-                        }
-                    }
-                }
-                zis.closeEntry();
+                if (!procesarEntradaZip(destDir, entry, zis)) return false;
             }
             return true;
         } catch (Exception e) {
-            e.printStackTrace();
             return false;
+        }
+    }
+
+    private boolean procesarEntradaZip(File destDir, ZipEntry entry, ZipInputStream zis) throws IOException {
+        File file = new File(destDir, entry.getName());
+
+        // --- FIX DE SEGURIDAD: Prevenir "Zip Slip" ---
+        String destDirPath = destDir.getCanonicalPath();
+        String destFilePath = file.getCanonicalPath();
+        if (!destFilePath.startsWith(destDirPath + File.separator)) {
+            throw new IOException("Violación de seguridad (Zip Slip): Intento de escape de directorio detectado.");
+        }
+        // ---------------------------------------------
+
+        if (entry.isDirectory()) {
+            return file.exists() || file.mkdirs();
+        } else {
+            File parentDir = file.getParentFile();
+            if (!parentDir.exists() && !parentDir.mkdirs()) return false;
+            extraerArchivo(zis, file);
+            zis.closeEntry();
+            return true;
+        }
+    }
+
+    private void extraerArchivo(ZipInputStream zis, File file) throws IOException {
+        try (BufferedOutputStream bos = new BufferedOutputStream(new FileOutputStream(file))) {
+            byte[] buffer = new byte[1024];
+            int count;
+            while ((count = zis.read(buffer)) > 0) {
+                bos.write(buffer, 0, count);
+            }
         }
     }
 }

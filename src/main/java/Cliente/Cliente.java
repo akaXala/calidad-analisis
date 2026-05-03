@@ -275,7 +275,7 @@ public class Cliente {
         gestor.eliminarArchivo(zipName);
         System.out.println("Carpeta recibida y descomprimida exitosamente del servidor.");
     }
-
+    
     private static void clearTerminal() {
         try {
             new ProcessBuilder("cmd", "/c", "cls").inheritIO().start().waitFor();
